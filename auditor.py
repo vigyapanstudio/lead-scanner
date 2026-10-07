@@ -24,6 +24,7 @@ from bs4 import BeautifulSoup
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 THIS_YEAR = dt.date.today().year
+BLOCKED_STATUS = {401, 403, 405, 406, 429, 503}  # bot-protection / firewall answers
 TIMEOUT = 15
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -448,6 +449,12 @@ def scan_lead(rec: dict, options: dict, cache: dict) -> dict:
             res["Website Status"] = "Broken / Not Opening"
             web_issues.append(f"Website does not open: {site.get('error')}")
         web_score = 0
+    elif site["status"] in BLOCKED_STATUS:
+        res["Website Status"] = "Check Manually"
+        web_score = None
+        web_issues.append(f"Website blocked our automatic check (HTTP {site['status']}) - it may be working fine; "
+                          "please open it yourself")
+        res["SEO Status"] = "Could not check"
     else:
         info = site["info"]
         web_score = 100
@@ -576,6 +583,9 @@ def scan_lead(rec: dict, options: dict, cache: dict) -> dict:
     # ---------- Instagram (basic; detailed check added later in batch)
     if ig:
         res["Instagram Status"] = "Found (not checked in detail)"
+    elif res["Website Status"] == "Check Manually":
+        res["Instagram Status"] = "Check Manually"
+        ig_issues.append("Not in your list, and we could not read the website to look for it")
     else:
         res["Instagram Status"] = "No Instagram Found"
         ig_issues.append("No Instagram page found (not in list, not linked on website)")
@@ -736,6 +746,15 @@ def finalise(row: dict) -> dict:
             and "Instagram Page Setup" in opp:
         opp.append("Social Media Setup")
 
+    if ws == "Check Manually" and not opp:
+        row["Opportunities"] = "Check manually"
+        row["Lead Priority"] = "CHECK"
+        row["Website Issues"] = "\n".join("• " + i for i in row.pop("_web_issues"))
+        row["SEO Issues"] = "\n".join("• " + i for i in row.pop("_seo_issues"))
+        row["Instagram Issues"] = "\n".join("• " + i for i in row.pop("_ig_issues"))
+        row["Notes"] = "\n".join(row.pop("_notes"))
+        row["Pitch Note"] = "Website could not be checked automatically - open it and review it by hand."
+        return row
     big = {"New Website", "Website Redesign", "Instagram Page Setup"}
     n_big = len(big.intersection(opp))
     if n_big >= 2 or (len(opp) >= 3):

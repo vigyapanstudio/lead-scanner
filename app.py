@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 import auditor
+from pdf_report import build_pdf
 from report import build_report
 
 st.set_page_config(page_title="Vigyapan Lead Scanner", page_icon="🔎", layout="centered",
@@ -121,6 +122,8 @@ if st.button("🔍 Start scan", type="primary", width="stretch"):
             "domain_age": secret("DOMAIN_AGE", "yes").lower() != "no", "workers": workers}
     res = auditor.scan_all(df, mapping, opts, progress, lambda m: note.info(m))
     st.session_state["results"] = res
+    bar.progress(1.0, text="Preparing your PDF report…")
+    st.session_state["pdf"] = build_pdf(res, up.name)
     st.session_state["report"] = build_report(res, up.name)
     st.session_state["src"] = up.name
     bar.progress(1.0, text="Done!")
@@ -134,9 +137,11 @@ if res is None:
 # ---------------- step 3: results
 st.markdown('<div class="step">Step 3 · Download your report</div>', unsafe_allow_html=True)
 base = os.path.splitext(st.session_state.get("src", "list"))[0]
-st.download_button("⬇️ Download Excel report", st.session_state["report"], type="primary",
-                   width="stretch",
-                   file_name=f"{base} - Lead Report {dt.datetime.now():%d-%b-%Y}.xlsx",
+stamp = f"{dt.datetime.now():%d-%b-%Y}"
+st.download_button("⬇️ Download PDF report", st.session_state["pdf"], type="primary", width="stretch",
+                   file_name=f"{base} - Lead Report {stamp}.pdf", mime="application/pdf")
+st.download_button("Download as Excel (to sort and filter)", st.session_state["report"], width="stretch",
+                   file_name=f"{base} - Lead Report {stamp}.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 opp = res["Opportunities"].fillna("")
@@ -149,9 +154,9 @@ d.metric("Website needs redesign", int(opp.str.contains("Redesign|Upgrade").sum(
 e.metric("Needs SEO", int(opp.str.contains("SEO").sum()))
 f.metric("Instagram leads", int(opp.str.contains("Instagram").sum()))
 
-st.markdown("**Quick look** (full details are in the Excel report)")
+st.markdown("**Quick look** (every contact has its own detailed card in the PDF)")
 show = [c for c in ["Lead Priority", "Company", "Contact Person", "Phone", "Website Status",
                     "Opportunities", "Pitch Note"] if c in res.columns]
-order = res["Lead Priority"].map({"HOT": 0, "WARM": 1, "LOW": 2})
+order = res["Lead Priority"].map({"HOT": 0, "WARM": 1, "CHECK": 2, "LOW": 3})
 st.dataframe(res.assign(_o=order).sort_values("_o")[show], hide_index=True, width="stretch", height=420)
 st.markdown('<div class="foot">Made by Vigyapan Studio</div>', unsafe_allow_html=True)

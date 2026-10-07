@@ -49,6 +49,11 @@ LISTS = [
 ]
 
 
+def _avg(series):
+    m = pd.to_numeric(series, errors="coerce").mean()
+    return "-" if pd.isna(m) else round(m)
+
+
 def _header(ws, row, ncols):
     for c in range(1, ncols + 1):
         cell = ws.cell(row=row, column=c)
@@ -97,7 +102,7 @@ def _write_table(ws, df: pd.DataFrame, start_row=1):
 
 def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
     df = results.copy()
-    order = {"HOT": 0, "WARM": 1, "LOW": 2}
+    order = {"HOT": 0, "WARM": 1, "CHECK": 2, "LOW": 3}
     df["_o"] = df["Lead Priority"].map(order).fillna(3)
     df = df.sort_values(["_o", "Website Score"], na_position="first").drop(columns="_o")
     cols = [c for c in MAIN_COLS if c in df.columns] + [c for c in df.columns if c.startswith("[Original]")]
@@ -129,6 +134,7 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
         ("HOT leads (need 2+ big services)", int((df["Lead Priority"] == "HOT").sum())),
         ("WARM leads (need 1-2 services)", int((df["Lead Priority"] == "WARM").sum())),
         ("Digitally healthy (LOW)", int((df["Lead Priority"] == "LOW").sum())),
+        ("Check manually (site blocked our scan)", int((df["Lead Priority"] == "CHECK").sum())),
         (None, None),
         ("Need a NEW website", cnt("New Website")),
         ("Need website REDESIGN", cnt("Website Redesign")),
@@ -137,8 +143,8 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
         ("Need Instagram page setup", cnt("Instagram Page Setup")),
         ("Need Instagram management", cnt("Instagram Management")),
         (None, None),
-        ("Average website score", round(pd.to_numeric(df["Website Score"], errors="coerce").mean() or 0)),
-        ("Average SEO score (sites that open)", round(pd.to_numeric(df["SEO Score"], errors="coerce").mean() or 0)),
+        ("Average website score", _avg(df["Website Score"])),
+        ("Average SEO score (sites that open)", _avg(df["SEO Score"])),
     ]
     r0 = 5
     ws.cell(row=r0, column=2, value="What we found")
@@ -164,7 +170,7 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
             ws.cell(row=r, column=2).font = Font(bold=True, color=RED_T)
 
     # chart of services needed
-    chart_rows = [(l, v) for l, v in rows[5:11]]
+    chart_rows = [(l, v) for l, v in rows[6:12]]
     ws.cell(row=r0, column=7, value="Service")
     ws.cell(row=r0, column=8, value="Leads")
     for i, (l, v) in enumerate(chart_rows, 1):
