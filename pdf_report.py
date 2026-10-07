@@ -12,12 +12,13 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from brand import CLIENT_NAME, POWERED_BY
 from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer,
                                 Table, TableStyle)
 
-NAVY = colors.HexColor("#1F2A44")
-ACCENT = colors.HexColor("#E8772E")
-ACCENT_BG = colors.HexColor("#FDF0E6")
+NAVY = colors.HexColor("#0B2E2C")
+ACCENT = colors.HexColor("#FFB72B")
+ACCENT_BG = colors.HexColor("#FFF4DB")
 GREY = colors.HexColor("#6B7280")
 LINE = colors.HexColor("#E2E5EC")
 PANEL = colors.HexColor("#F6F7FA")
@@ -135,7 +136,7 @@ def _decorate(source, stamp):
         canvas.saveState()
         canvas.setFont("Helvetica-Bold", 8)
         canvas.setFillColor(NAVY)
-        canvas.drawString(MARGIN, PAGE_H - 9 * mm, "VIGYAPAN STUDIO  ·  Lead Scanner Report")
+        canvas.drawString(MARGIN, PAGE_H - 9 * mm, f"{CLIENT_NAME.upper()}  \u00b7  Lead Scanner Report")
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(GREY)
         canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - 9 * mm, f"Page {doc.page}")
@@ -144,14 +145,15 @@ def _decorate(source, stamp):
         canvas.line(MARGIN, PAGE_H - 10.5 * mm, PAGE_W - MARGIN, PAGE_H - 10.5 * mm)
         src = source if len(source) <= 60 else source[:57] + "..."
         canvas.drawString(MARGIN, 7 * mm, f"Source: {src}   ·   Scanned {stamp}")
-        canvas.drawRightString(PAGE_W - MARGIN, 7 * mm, "Made by Vigyapan Studio")
+        canvas.drawRightString(PAGE_W - MARGIN, 7 * mm, f"Powered by {POWERED_BY}")
         canvas.restoreState()
     return draw
 
 
 # ----------------------------------------------------------------------------- sections
 def _summary(df, source, stamp):
-    out = [P("Lead Scanner Report", "title"),
+    out = [P(f'<font color="#B57A00"><b>{escape(CLIENT_NAME.upper())}</b></font>', "label"),
+           P("Lead Scanner Report", "title"),
            P(f"{escape(source)}  ·  {len(df)} contacts scanned  ·  {stamp}", "sub"),
            Spacer(1, 8 * mm)]
     opp = df["Opportunities"].fillna("")
@@ -340,7 +342,7 @@ def _card(i, r, extras):
 
     # services + pitch
     opp = [o.strip() for o in val(r.get("Opportunities")).split(",") if o.strip()]
-    chips = " &nbsp; ".join(f'<font backColor="{ACCENT_BG.hexval()}" color="#9A4A12"><b>&nbsp;{escape(o)}&nbsp;</b></font>'
+    chips = " &nbsp; ".join(f'<font backColor="{ACCENT_BG.hexval()}" color="#7A5200"><b>&nbsp;{escape(o)}&nbsp;</b></font>'
                             for o in opp) if opp else "-"
     pitch = Table([[P("RECOMMENDED SERVICES", "label")], [P(chips, "small")],
                    [P("PITCH LINE", "label")], [P(esc(r.get("Pitch Note")), "pitch")]],
@@ -371,7 +373,7 @@ def build_pdf(results: pd.DataFrame, source_name: str = "") -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
                             topMargin=16 * mm, bottomMargin=13 * mm,
-                            title="Lead Scanner Report", author="Vigyapan Studio")
+                            title="Lead Scanner Report", author=CLIENT_NAME)
     story = _summary(df, source, stamp) + [PageBreak()]
     # index uses attribute-style names
     idx = df.rename(columns=lambda c: c.replace(" ", "_"))

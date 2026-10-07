@@ -5,14 +5,15 @@ import datetime as dt
 import io
 
 import pandas as pd
+from brand import CLIENT_NAME, POWERED_BY
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-NAVY = "1F2A44"
-ACCENT = "E8772E"
+NAVY = "0B2E2C"
+ACCENT = "FFB72B"
 RED, AMBER, GREEN = "F8D7DA", "FFF1CC", "D8F0DF"
 RED_T, AMBER_T, GREEN_T = "8A1C24", "7A5300", "1E6B37"
 THIN = Side(style="thin", color="D9DCE3")
@@ -114,9 +115,9 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
     ws = wb.active
     ws.title = "Summary"
     ws.sheet_view.showGridLines = False
-    ws["B2"] = "VIGYAPAN STUDIO  ·  Lead Scanner Report"
+    ws["B2"] = f"{CLIENT_NAME.upper()}  ·  Lead Scanner Report"
     ws["B2"].font = Font(size=18, bold=True, color=NAVY)
-    ws["B3"] = f"Source: {source_name or 'database'}   ·   Scanned on {dt.datetime.now():%d %b %Y, %I:%M %p}"
+    ws["B3"] = f"Source: {source_name or 'database'}   ·   Scanned on {dt.datetime.now():%d %b %Y, %I:%M %p}   ·   Powered by {POWERED_BY}"
     ws["B3"].font = Font(size=10, color="6B7280")
     ws.column_dimensions["A"].width = 3
     ws.column_dimensions["B"].width = 38
