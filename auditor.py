@@ -174,6 +174,29 @@ def email_domain(email) -> str | None:
     return None if d in FREE_EMAIL_DOMAINS else d
 
 
+def clean_phone(value) -> str:
+    """Return a 10-digit Indian mobile/landline-ish number, or '' if it doesn't look valid."""
+    if value is None or is_empty(value):
+        return ""
+    first = re.split(r"[/,;|]| or ", str(value))[0]
+    d = re.sub(r"\D", "", first)
+    if d.startswith("0091"):
+        d = d[4:]
+    if len(d) == 12 and d.startswith("91"):
+        d = d[2:]
+    if len(d) == 11 and d.startswith("0"):
+        d = d[1:]
+    return d if len(d) == 10 else ""
+
+
+def whatsapp_link(phone, message: str) -> str:
+    from urllib.parse import quote
+    d = clean_phone(phone)
+    if d and d[0] in "6789":
+        return f"https://wa.me/91{d}?text={quote(message)}"
+    return ""
+
+
 def instagram_handle(value) -> str | None:
     """Pull a clean handle out of '@abc', 'abc', 'instagram.com/abc/?hl=en' ..."""
     if value is None or is_empty(value):
@@ -380,6 +403,25 @@ def analyse_html(html: str, final_url: str, headers) -> dict:
             break
     info["has_contact"] = "mailto:" in joined or "tel:" in joined or bool(
         re.search(r"(\+91[\s-]?)?[6-9]\d{9}", text))
+    # first link to each social platform
+    links = {}
+    for h in hrefs:
+        hl = (h or "").lower()
+        for k, pat in SOCIAL_PATTERNS.items():
+            if k not in links and re.search(pat, hl) and not re.search(r"/(sharer|share|intent)\b|sharer\.php", hl):
+                links[k] = h.strip()
+    info["social_links"] = links
+    # contact details printed on the website (used to fill gaps in the list)
+    emails = []
+    for h in hrefs:
+        if (h or "").lower().startswith("mailto:"):
+            emails.append(h[7:].split("?")[0].strip())
+    emails += re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text)
+    info["site_emails"] = [e for e in dict.fromkeys(x.lower() for x in emails)
+                           if not re.search(r"\.(png|jpg|jpeg|gif|webp|svg)$|example\.|sentry|wixpress", e)][:3]
+    phones = [h[4:] for h in hrefs if (h or "").lower().startswith("tel:")]
+    phones += re.findall(r"(?:\+91[\s-]?|0)?[6-9]\d{4}[\s-]?\d{5}", text)
+    info["site_phones"] = list(dict.fromkeys(clean_phone(p) for p in phones if clean_phone(p)))[:3]
     return info
 
 
@@ -421,7 +463,10 @@ def scan_lead(rec: dict, options: dict, cache: dict) -> dict:
         "Load Time (s)": None, "Copyright Year": None, "Domain Registered": None,
         "SSL Days Left": None, "Built With": "", "Old Technology": "",
         "Page Title": "", "Meta Description": "", "Mobile Speed (Google)": None,
+        "Facebook": "", "LinkedIn": "", "YouTube": "",
+        "Email (from website)": "", "Phone (from website)": "",
     }
+    social_issues = []
 
     site = None
     if url:
@@ -575,6 +620,13 @@ def scan_lead(rec: dict, options: dict, cache: dict) -> dict:
             res["Instagram Handle"] = ig
         found = [k for k, v in info["socials"].items() if v and k != "Instagram"]
         res["Other Socials Found"] = ", ".join(found)
+        sl = info.get("social_links", {})
+        for k in ("Facebook", "LinkedIn", "YouTube"):
+            res[k] = sl.get(k, "")
+            if not res[k] and not info["parked"]:
+                social_issues.append(f"No {k} page linked on the website")
+        res["Email (from website)"] = ", ".join(info.get("site_emails", []))
+        res["Phone (from website)"] = ", ".join(info.get("site_phones", []))
 
     res["Website Score"] = web_score
     if not res["SEO Status"]:
@@ -594,7 +646,15 @@ def scan_lead(rec: dict, options: dict, cache: dict) -> dict:
     res["_seo_issues"] = seo_issues
     res["_ig_issues"] = ig_issues
     res["_notes"] = notes
+    res["_social_issues"] = social_issues
     out.update(res)
+    # fill gaps in the contact list using details printed on their website
+    if not clean_phone(out.get("Phone")) and res["Phone (from website)"]:
+        out["Phone"] = res["Phone (from website)"].split(",")[0].strip()
+        notes.append("Phone number taken from their website")
+    if is_empty(out.get("Email")) and res["Email (from website)"]:
+        out["Email"] = res["Email (from website)"].split(",")[0].strip()
+        notes.append("Email taken from their website")
     return out
 
 
@@ -725,12 +785,66 @@ def apply_instagram_details(row: dict, prof: dict | None) -> None:
 
 
 # --------------------------------------------------------------------------
+# 6b. Optional: Google Maps listing check (Google Places API, needs a key)
+# --------------------------------------------------------------------------
+def google_maps_lookup(company: str, city: str, key: str) -> dict | None:
+    """Look the business up on Google Maps. Returns None if the lookup itself failed."""
+    if not company:
+        return {}
+    try:
+        r = requests.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            headers={"X-Goog-Api-Key": key,
+                     "X-Goog-FieldMask": "places.displayName,places.rating,places.userRatingCount,"
+                                         "places.googleMapsUri,places.formattedAddress,places.businessStatus"},
+            json={"textQuery": f"{company} {city}".strip(), "regionCode": "IN", "pageSize": 1}, timeout=20)
+        if r.status_code != 200:
+            return None
+        places = r.json().get("places") or []
+        if not places:
+            return {}
+        p = places[0]
+        name = (p.get("displayName") or {}).get("text", "")
+        # make sure the result is really this company (shares a meaningful word)
+        words = {w for w in re.findall(r"[a-z]{4,}", company.lower())} - {"private", "limited", "india", "company", "enterprises", "industries"}
+        if words and not any(w in name.lower() for w in words):
+            return {}
+        return {"name": name, "rating": p.get("rating"), "reviews": p.get("userRatingCount") or 0,
+                "url": p.get("googleMapsUri", ""), "address": p.get("formattedAddress", ""),
+                "status": p.get("businessStatus", "")}
+    except Exception:
+        return None
+
+
+def apply_maps(row: dict, place: dict | None) -> None:
+    if place is None:            # lookup failed - say nothing
+        row["Google Maps"] = "Could not check"
+        return
+    if not place:
+        row["Google Maps"] = "Not found"
+        row["_seo_issues"].append("Not found on Google Maps - customers searching nearby won't see them")
+        return
+    row["Google Maps"] = "Found"
+    row["Google Rating"] = place.get("rating")
+    row["Google Reviews"] = place.get("reviews")
+    row["Google Maps Link"] = place.get("url")
+    if (place.get("reviews") or 0) < 10:
+        row["_seo_issues"].append(f"Only {place.get('reviews') or 0} Google reviews")
+    if place.get("rating") and place["rating"] < 4:
+        row["_seo_issues"].append(f"Low Google rating ({place['rating']} stars)")
+
+
+# --------------------------------------------------------------------------
 # 7. Final verdict: what can we sell this lead?
 # --------------------------------------------------------------------------
-def finalise(row: dict) -> dict:
+NO_SITE = ("No Website", "Broken / Not Opening", "Parked / Empty / Error")
+
+
+def finalise(row: dict, options: dict | None = None) -> dict:
+    options = options or {}
     opp = []
     ws = row["Website Status"]
-    if ws in ("No Website", "Broken / Not Opening", "Parked / Empty / Error"):
+    if ws in NO_SITE:
         opp.append("New Website")
     elif ws == "Outdated - Needs Redesign":
         opp.append("Website Redesign")
@@ -745,66 +859,123 @@ def finalise(row: dict) -> dict:
     if ws not in ("No Website", "Broken / Not Opening") and not row.get("Other Socials Found") \
             and "Instagram Page Setup" in opp:
         opp.append("Social Media Setup")
+    gm = row.get("Google Maps")
+    if gm == "Not found" or (gm == "Found" and (row.get("Google Reviews") or 0) < 10):
+        opp.append("Google Business Profile")
+
+    row["Website Issues"] = "\n".join("• " + i for i in row.pop("_web_issues"))
+    row["SEO Issues"] = "\n".join("• " + i for i in row.pop("_seo_issues"))
+    row["Instagram Issues"] = "\n".join("• " + i for i in row.pop("_ig_issues"))
+    row["Social Media Issues"] = "\n".join("• " + i for i in row.pop("_social_issues", []))
+    row["Notes"] = "\n".join(row.pop("_notes"))
 
     if ws == "Check Manually" and not opp:
         row["Opportunities"] = "Check manually"
         row["Lead Priority"] = "CHECK"
-        row["Website Issues"] = "\n".join("• " + i for i in row.pop("_web_issues"))
-        row["SEO Issues"] = "\n".join("• " + i for i in row.pop("_seo_issues"))
-        row["Instagram Issues"] = "\n".join("• " + i for i in row.pop("_ig_issues"))
-        row["Notes"] = "\n".join(row.pop("_notes"))
         row["Pitch Note"] = "Website could not be checked automatically - open it and review it by hand."
-        return row
-    big = {"New Website", "Website Redesign", "Instagram Page Setup"}
-    n_big = len(big.intersection(opp))
-    if n_big >= 2 or (len(opp) >= 3):
-        prio = "HOT"
-    elif opp:
-        prio = "WARM"
+        row["Pitch (Hinglish)"] = "Website automatic check nahi ho payi - ek baar khud khol ke dekh lijiye."
     else:
-        prio = "LOW"
+        big = {"New Website", "Website Redesign", "Instagram Page Setup"}
+        n_big = len(big.intersection(opp))
+        core = [o for o in opp if o != "Google Business Profile"]
+        if n_big >= 2 or len(core) >= 3:
+            prio = "HOT"
+        elif opp:
+            prio = "WARM"
+        else:
+            prio = "LOW"
+        row["Opportunities"] = ", ".join(opp) if opp else "None - digitally healthy"
+        row["Lead Priority"] = prio
+        row["Pitch Note"] = pitch_note(row, opp)
+        row["Pitch (Hinglish)"] = pitch_note_hinglish(row, opp)
 
-    row["Opportunities"] = ", ".join(opp) if opp else "None - digitally healthy"
-    row["Lead Priority"] = prio
-    row["Website Issues"] = "\n".join("• " + i for i in row.pop("_web_issues"))
-    row["SEO Issues"] = "\n".join("• " + i for i in row.pop("_seo_issues"))
-    row["Instagram Issues"] = "\n".join("• " + i for i in row.pop("_ig_issues"))
-    row["Notes"] = "\n".join(row.pop("_notes"))
-    row["Pitch Note"] = pitch_note(row, opp)
+    # Coverage / podcast prospect: already strong online -> has a marketing budget
+    strong_site = ws in ("Good / Modern", "Needs Upgrade") and (row.get("Website Score") or 0) >= 70
+    social = bool(row.get("Instagram Handle")) or bool(row.get("Other Socials Found"))
+    row["Coverage Prospect"] = "Yes" if strong_site and social else ""
+    if row["Coverage Prospect"]:
+        row["Coverage Pitch"] = (f"{row.get('Company') or 'They'} already invest in their online presence - "
+                                 "a strong fit for event coverage or a podcast feature.")
+    else:
+        row["Coverage Pitch"] = ""
+
+    row["WhatsApp Message"] = whatsapp_message(row, opp, options)
+    row["WhatsApp Link"] = whatsapp_link(row.get("Phone"), row["WhatsApp Message"])
     return row
+
+
+def _findings(row, opp, lang="en"):
+    ws = row["Website Status"]
+    out = []
+    en = lang == "en"
+    if ws == "No Website":
+        out.append("no website" if en else "website nahi hai")
+    elif ws == "Broken / Not Opening":
+        out.append("website is not opening" if en else "website khul nahi rahi")
+    elif ws == "Parked / Empty / Error":
+        out.append("website is empty / 'coming soon'" if en else "website khaali hai ('coming soon')")
+    elif ws in ("Outdated - Needs Redesign", "Needs Upgrade"):
+        issues = row["Website Issues"].lower()
+        if "mobile" in issues:
+            out.append("website is not mobile-friendly" if en else "website mobile pe theek nahi dikhti")
+        if "https" in issues:
+            out.append("website shows 'Not Secure'" if en else "website pe 'Not Secure' dikhta hai")
+        m = re.search(r"footer still says (\d{4})", issues)
+        if m:
+            out.append(f"website was last updated around {m.group(1)}" if en
+                       else f"website {m.group(1)} ke baad update nahi hui")
+        if not out:
+            out.append("website looks dated" if en else "website purani lagti hai")
+    if "SEO" in opp and ws not in NO_SITE:
+        out.append(f"hard to find on Google (SEO {row['SEO Score']}/100)" if en
+                   else f"Google pe dhoondhna mushkil hai (SEO {row['SEO Score']}/100)")
+    if "Google Business Profile" in opp:
+        out.append("weak / missing Google Maps listing" if en else "Google Maps listing kamzor / missing hai")
+    if "Instagram Page Setup" in opp:
+        out.append("no Instagram page" if en else "Instagram page nahi hai")
+    elif "Instagram Management" in opp:
+        out.append("Instagram is inactive" if en else "Instagram active nahi hai")
+    return out
 
 
 def pitch_note(row: dict, opp: list[str]) -> str:
     who = row.get("Company") or row.get("Contact Person") or "This business"
-    bits = []
-    ws = row["Website Status"]
-    if ws == "No Website":
-        bits.append("no website - people who search for them online find nothing")
-    elif ws == "Broken / Not Opening":
-        bits.append("website is not opening - every visitor is lost right now")
-    elif ws == "Parked / Empty / Error":
-        bits.append("website is empty / 'coming soon'")
-    elif ws in ("Outdated - Needs Redesign", "Needs Upgrade"):
-        issues = row["Website Issues"].lower()
-        why = []
-        for key, short in (("mobile", "not mobile-friendly"), ("footer still says", None),
-                           ("old technology", "built on old technology"), ("https", "shows 'Not Secure'"),
-                           ("slow", "slow to load")):
-            if key in issues:
-                if short is None:
-                    m = re.search(r"footer still says (\d{4})", issues)
-                    short = f"last updated around {m.group(1)}" if m else "looks old"
-                why.append(short)
-        bits.append("website looks dated (" + ", ".join(why[:2]) + ")" if why else "website needs a refresh")
-    if "SEO" in opp and ws not in ("No Website", "Broken / Not Opening", "Parked / Empty / Error"):
-        bits.append(f"SEO score only {row['SEO Score']}/100, so hard to find on Google")
-    if "Instagram Page Setup" in opp:
-        bits.append("no Instagram page")
-    elif "Instagram Management" in opp:
-        bits.append("Instagram is inactive / weak")
+    bits = _findings(row, opp, "en")
     if not bits:
         return "Digitally healthy - pitch event coverage / podcast feature instead."
     return f"{who}: " + "; ".join(bits) + "."
+
+
+def pitch_note_hinglish(row: dict, opp: list[str]) -> str:
+    who = row.get("Company") or row.get("Contact Person") or "Is business"
+    bits = _findings(row, opp, "hi")
+    if not bits:
+        return f"{who} online strong hai - inhe event coverage / podcast feature offer karein."
+    return f"{who}: " + "; ".join(bits) + "."
+
+
+def whatsapp_message(row: dict, opp: list[str], options: dict) -> str:
+    from brand import CLIENT_NAME
+    lang = options.get("language", "en")
+    name = (row.get("Contact Person") or "").split(" ")[0].strip() if not is_empty(row.get("Contact Person")) else ""
+    company = row.get("Company") or "your business"
+    event = options.get("event", "").strip()
+    bits = _findings(row, opp, "en" if lang == "en" else "hi")
+    if lang == "en":
+        hi = f"Hi {name}," if name else "Hi,"
+        met = f" We met at {event}." if event else ""
+        if row.get("Coverage Prospect") == "Yes" or not bits:
+            return (f"{hi} this is {CLIENT_NAME}.{met} We loved {company}'s brand presence online and would like to "
+                    f"feature you in our event coverage / podcast. Can we share the details?")
+        return (f"{hi} this is {CLIENT_NAME}.{met} We did a quick free online check of {company} and noticed: "
+                + "; ".join(bits) + ". We can help fix this - can I send you a short free report?")
+    hi = f"Namaste {name} ji," if name else "Namaste,"
+    met = f" Hum {event} pe mile the." if event else ""
+    if row.get("Coverage Prospect") == "Yes" or not bits:
+        return (f"{hi} main {CLIENT_NAME} se.{met} {company} ki online presence bahut acchi hai - hum aapko apni event "
+                f"coverage / podcast mein feature karna chahenge. Kya details share karun?")
+    return (f"{hi} main {CLIENT_NAME} se.{met} Humne {company} ka ek free online check kiya, kuch cheezein dikhi: "
+            + "; ".join(bits) + ". Hum ise theek karne mein madad kar sakte hain - kya main aapko ek chhoti free report bhej doon?")
 
 
 # --------------------------------------------------------------------------
@@ -842,13 +1013,22 @@ def scan_all(df: pd.DataFrame, mapping: dict, options: dict | None = None,
                     if r.get("Instagram Handle"):
                         apply_instagram_details(r, profiles.get(r["Instagram Handle"].lower()))
 
-    final = [finalise(r) for r in results]
+    maps_key = options.get("maps_key")
+    if maps_key:
+        log("Checking Google Maps listings...")
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            places = list(ex.map(lambda r: google_maps_lookup(r.get("Company") or "", r.get("City") or "", maps_key),
+                                 results))
+        for r, pl in zip(results, places):
+            apply_maps(r, pl)
+
+    final = [finalise(r, options) for r in results]
     out = pd.DataFrame(final)
-    # keep any extra columns from the original sheet (e.g. event name, stall no.)
+    if options.get("event"):
+        out.insert(0, "Event", options["event"])
     used = {c for c in mapping.values() if c}
-    extras = [c for c in df.columns if c not in used]
-    for c in extras:
-        out[f"[Original] {c}"] = df[c].values
+    for c in [c for c in df.columns if c not in used]:
+        out["Data Check" if c == "Data Check" else f"[Original] {c}"] = df[c].values
     return out
 
 
@@ -862,5 +1042,5 @@ def _safe_scan(rec, options, cache):
                     "Instagram Handle": instagram_handle(rec.get("instagram")) or "",
                     "Instagram Status": "Found (not checked in detail)" if instagram_handle(rec.get("instagram")) else "No Instagram Found",
                     "_web_issues": [f"Scanner error: {type(e).__name__}"], "_seo_issues": [],
-                    "_ig_issues": [], "_notes": []})
+                    "_ig_issues": [], "_notes": [], "_social_issues": []})
         return out

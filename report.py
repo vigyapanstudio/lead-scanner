@@ -20,12 +20,15 @@ THIN = Side(style="thin", color="D9DCE3")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 
 MAIN_COLS = [
-    "Lead Priority", "Company", "Contact Person", "Phone", "Email", "City", "Category",
-    "Opportunities", "Pitch Note",
+    "Lead Priority", "Event", "Company", "Contact Person", "Phone", "Email", "City", "Category",
+    "Opportunities", "Pitch Note", "Pitch (Hinglish)", "WhatsApp Link", "WhatsApp Message",
+    "Coverage Prospect", "Coverage Pitch", "Data Check",
     "Website", "Website Checked", "Website Status", "Website Score", "Website Age",
     "SEO Score", "SEO Status", "Instagram Handle", "Instagram Status",
     "Instagram Followers", "Instagram Posts", "Instagram Last Post", "Instagram Engagement %",
-    "Other Socials Found", "Website Issues", "SEO Issues", "Instagram Issues",
+    "Other Socials Found", "Facebook", "LinkedIn", "YouTube", "Google Maps", "Google Rating", "Google Reviews",
+    "Google Maps Link", "Email (from website)", "Phone (from website)",
+    "Website Issues", "SEO Issues", "Instagram Issues", "Social Media Issues",
     "HTTPS Secure", "Mobile Friendly", "Load Time (s)", "Copyright Year", "Domain Registered",
     "SSL Days Left", "Built With", "Old Technology", "Mobile Speed (Google)",
     "Page Title", "Meta Description", "Notes",
@@ -34,9 +37,11 @@ WIDTHS = {"Lead Priority": 11, "Company": 26, "Contact Person": 20, "Phone": 15,
           "Opportunities": 30, "Pitch Note": 55, "Website": 26, "Website Checked": 30,
           "Website Status": 24, "Website Age": 26, "SEO Status": 15, "Instagram Status": 24,
           "Website Issues": 55, "SEO Issues": 50, "Instagram Issues": 45, "Page Title": 35,
-          "Meta Description": 40, "Notes": 40, "Old Technology": 25}
+          "Meta Description": 40, "Notes": 40, "Old Technology": 25, "Pitch (Hinglish)": 55,
+          "WhatsApp Link": 18, "WhatsApp Message": 60, "Coverage Pitch": 45, "Data Check": 24,
+          "Social Media Issues": 40, "Facebook": 22, "LinkedIn": 22, "YouTube": 22, "Google Maps Link": 22}
 CONTACT_COLS = ["Lead Priority", "Company", "Contact Person", "Phone", "Email", "City",
-                "Website", "Pitch Note"]
+                "Website", "WhatsApp Link", "Pitch Note"]
 
 LISTS = [
     ("No Website", lambda d: d["Opportunities"].str.contains("New Website"),
@@ -47,6 +52,10 @@ LISTS = [
      ["Website Checked", "SEO Score", "SEO Issues"]),
     ("Instagram Leads", lambda d: d["Opportunities"].str.contains("Instagram"),
      ["Instagram Handle", "Instagram Status", "Instagram Issues"]),
+    ("Google Maps Leads", lambda d: d["Opportunities"].str.contains("Google Business"),
+     ["Google Maps", "Google Rating", "Google Reviews", "Google Maps Link"]),
+    ("Coverage Prospects", lambda d: d.get("Coverage Prospect", pd.Series([""] * len(d), index=d.index)) == "Yes",
+     ["Website Checked", "Instagram Handle", "Coverage Pitch"]),
 ]
 
 
@@ -74,7 +83,14 @@ def _write_table(ws, df: pd.DataFrame, start_row=1):
         for j, v in enumerate(rec, 1):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 v = None
-            cell = ws.cell(row=i, column=j, value=v)
+            col_name = cols[j - 1]
+            if col_name in ("WhatsApp Link", "Google Maps Link", "Facebook", "LinkedIn", "YouTube") \
+                    and isinstance(v, str) and v.startswith("http"):
+                cell = ws.cell(row=i, column=j, value="Open WhatsApp" if col_name == "WhatsApp Link" else v)
+                cell.hyperlink = v
+                cell.font = Font(color="0B6E4F", underline="single", bold=col_name == "WhatsApp Link")
+            else:
+                cell = ws.cell(row=i, column=j, value=v)
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             cell.border = BORDER
     for j, c in enumerate(cols, 1):
@@ -101,7 +117,7 @@ def _write_table(ws, df: pd.DataFrame, start_row=1):
     return last
 
 
-def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
+def build_report(results: pd.DataFrame, source_name: str = "", removed: pd.DataFrame | None = None) -> bytes:
     df = results.copy()
     order = {"HOT": 0, "WARM": 1, "CHECK": 2, "LOW": 3}
     df["_o"] = df["Lead Priority"].map(order).fillna(3)
@@ -195,6 +211,9 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
             ("Website Redesign", "Websites that are old, not mobile-friendly, insecure or slow"),
             ("Needs SEO", "Working websites that Google can't read well"),
             ("Instagram Leads", "No Instagram page, or an Instagram that needs work"),
+            ("Google Maps Leads", "Not on Google Maps, or very few reviews"),
+            ("Coverage Prospects", "Already strong online - pitch event coverage / podcast"),
+            ("Cleanup Log", "Duplicate contacts removed before scanning"),
             ("How to Read", "What each score and column means")]
     for i, (t, d) in enumerate(tabs, r + 3):
         ws.cell(row=i, column=2, value=t).font = Font(bold=True)
@@ -210,6 +229,12 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
         wsx = wb.create_sheet(name)
         _write_table(wsx, sub[keep])
 
+    if removed is not None and len(removed):
+        wl = wb.create_sheet("Cleanup Log")
+        wl["A1"] = "These duplicate contacts were removed before scanning (same phone, email or company):"
+        wl["A1"].font = Font(bold=True, color=NAVY)
+        _write_table(wl, removed.drop(columns=[c for c in removed.columns if c == "Data Check"]), start_row=3)
+
     wh = wb.create_sheet("How to Read")
     wh.column_dimensions["A"].width = 26
     wh.column_dimensions["B"].width = 100
@@ -222,7 +247,11 @@ def build_report(results: pd.DataFrame, source_name: str = "") -> bytes:
         ("SEO Score (0-100)", "Checks the basics Google needs: page title, description, main heading, image alt text, sitemap, robots.txt, social share tags, business schema, analytics, enough text. Under 70 = Needs SEO Work."),
         ("Instagram Status", "Found from the list or from links on the website. Detailed checks (followers, last post, bio, link in bio, business account, engagement) only run if an Apify token was added."),
         ("Opportunities", "The services you can pitch: New Website, Website Redesign/Upgrade, SEO, Instagram Page Setup, Instagram Management, Social Media Setup."),
-        ("Pitch Note", "A one-line, plain-English reason to call this lead. Edit before using."),
+        ("Pitch Note", "A one-line, plain-English reason to call this lead (Hinglish version next to it). Edit before using."),
+        ("WhatsApp Link", "Click to open WhatsApp with a ready, personalised message to this contact. Check it, then press send."),
+        ("Coverage Prospect", "Already strong online, so likely to have a marketing budget - pitch event coverage or a podcast feature."),
+        ("Google Maps", "Only filled in when the Google Maps check is switched on. Shows rating and number of reviews."),
+        ("Data Check", "Problems found in your list before scanning, e.g. a phone number that is too short."),
         ("Colours", "Red = poor (under 50), Yellow = average (50-79), Green = good (80+)."),
         ("Limits", "This is an automated first check of the HOME PAGE only. Always open the site yourself before pitching. Some sites block automated visitors and may show as 'not opening'."),
     ]

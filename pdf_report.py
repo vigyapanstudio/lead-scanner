@@ -157,33 +157,41 @@ def _summary(df, source, stamp):
            P(f"{escape(source)}  ·  {len(df)} contacts scanned  ·  {stamp}", "sub"),
            Spacer(1, 8 * mm)]
     opp = df["Opportunities"].fillna("")
+    def n(mask):
+        return int(mask.sum())
+    cov = df["Coverage Prospect"].fillna("") if "Coverage Prospect" in df else pd.Series([""] * len(df))
+    dchk = df["Data Check"].fillna("") if "Data Check" in df else pd.Series([""] * len(df))
     tiles = [
         ("Contacts scanned", len(df), NAVY),
-        ("HOT leads", int((df["Lead Priority"] == "HOT").sum()), RED),
-        ("WARM leads", int((df["Lead Priority"] == "WARM").sum()), AMB),
-        ("Healthy (LOW)", int((df["Lead Priority"] == "LOW").sum()), GRN),
-        ("No website", int(opp.str.contains("New Website").sum()), NAVY),
-        ("Website redesign / upgrade", int(opp.str.contains("Redesign|Upgrade").sum()), NAVY),
-        ("Need SEO work", int(opp.str.contains("SEO").sum()), NAVY),
-        ("Instagram leads", int(opp.str.contains("Instagram").sum()), NAVY),
+        ("HOT leads", n(df["Lead Priority"] == "HOT"), RED),
+        ("WARM leads", n(df["Lead Priority"] == "WARM"), AMB),
+        ("Healthy (LOW)", n(df["Lead Priority"] == "LOW"), GRN),
+        ("No website", n(opp.str.contains("New Website")), NAVY),
+        ("Website redesign / upgrade", n(opp.str.contains("Redesign|Upgrade")), NAVY),
+        ("Need SEO work", n(opp.str.contains("SEO")), NAVY),
+        ("Instagram leads", n(opp.str.contains("Instagram")), NAVY),
+        ("Google Maps fixes", n(opp.str.contains("Google Business")), NAVY),
+        ("Coverage / podcast prospects", n(cov == "Yes"), GRN),
+        ("Contacts with data issues", n(dchk.astype(str).str.strip() != ""), AMB),
+        ("Check manually", n(df["Lead Priority"] == "CHECK"), GREY),
     ]
     cells = [[P(f'<font color="{c.hexval()}">{n}</font>', "kpi"), P(escape(l), "kpil")] for l, n, c in tiles]
     w = CONTENT_W / 4
-    grid = Table([[cells[i] for i in range(4)], [cells[i] for i in range(4, 8)]],
-                 colWidths=[w] * 4, rowHeights=[22 * mm, 22 * mm])
+    grid = Table([cells[0:4], cells[4:8], cells[8:12]], colWidths=[w] * 4, rowHeights=[20 * mm] * 3)
     grid.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), PANEL), ("BOX", (0, 0), (-1, -1), 0.6, LINE),
         ("INNERGRID", (0, 0), (-1, -1), 3, colors.white), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
-    out += [grid, Spacer(1, 9 * mm)]
+    out += [grid, Spacer(1, 6 * mm)]
 
     # bar chart of services
     services = [("New website", "New Website"), ("Website redesign", "Website Redesign"),
                 ("Website upgrade", "Website Upgrade"), ("SEO", "SEO"),
                 ("Instagram page setup", "Instagram Page Setup"),
-                ("Instagram management", "Instagram Management")]
+                ("Instagram management", "Instagram Management"),
+                ("Google Maps listing", "Google Business Profile")]
     counts = [(l, int(opp.str.contains(k).sum())) for l, k in services]
     mx = max([c for _, c in counts] + [1])
-    row_h, label_w = 9 * mm, 45 * mm
+    row_h, label_w = 8 * mm, 45 * mm
     bar_w = CONTENT_W - label_w - 20 * mm
     d = Drawing(CONTENT_W, row_h * len(counts))
     for i, (l, c) in enumerate(counts):
@@ -207,6 +215,7 @@ def _summary(df, source, stamp):
                                         f'<font color="{GRN.hexval()}"><b>green 80+</b></font> = good.', "small")],
         [P("<b>Website age</b>", "small"), P("Latest year seen in the website footer (©) or server date. 'Old' = no sign of an update in 4+ years.", "small")],
         [P("<b>Please note</b>", "small"), P("This is an automated first check of each company's home page. Open the website yourself before pitching. 'Check Manually' means the website blocked our automatic visit.", "small")],
+        [P("<b>Coverage prospect</b>", "small"), P("Already strong online (good website + social media) - likely to have a marketing budget, so pitch event coverage or a podcast feature.", "small")],
         [P("<b>Instagram</b>", "small"), P("Found from your list or from a link on their website. Followers / last post are shown only when the detailed Instagram check is switched on.", "small")],
     ]
     lt = Table(legend, colWidths=[26 * mm, CONTENT_W - 26 * mm])
@@ -264,7 +273,9 @@ def _card(i, r, extras):
     # header
     head = Table([[P(f"#{i}  {company}", "cardhead"),
                    badge(f"{pr} LEAD" if pr else "-", fg, bg, 26 * mm)],
-                  [P(f"Row {excel_row} in your Excel file", "cardsub"), ""]],
+                  [P(f"Row {excel_row} in your Excel file" +
+                     (f'  \u00b7  <font color="#5EE6B8"><b>Coverage / podcast prospect</b></font>'
+                      if val(r.get("Coverage Prospect")) == "Yes" else ""), "cardsub"), ""]],
                  colWidths=[CONTENT_W - 32 * mm, 32 * mm])
     head.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), NAVY), ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                               ("SPAN", (1, 0), (1, 1)), ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -274,6 +285,7 @@ def _card(i, r, extras):
     fields = [("Contact person", r.get("Contact Person")), ("Phone", r.get("Phone")),
               ("Email", r.get("Email")), ("Website", r.get("Website Checked") or r.get("Website")),
               ("City", r.get("City")), ("Industry", r.get("Category"))]
+    fields += [("Event", r.get("Event"))] if val(r.get("Event")) else []
     fields += [(k, r.get(k_full)) for k, k_full in extras]
     fields = [(k, v) for k, v in fields if val(v) or k in ("Contact person", "Phone", "Email", "Website")]
     cells = [[P(escape(k), "label"),
@@ -329,9 +341,31 @@ def _card(i, r, extras):
                                 ("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 6),
                                 ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
 
+    # online presence strip
+    def yn(v, label):
+        ok = bool(val(v))
+        col = GRN if ok else RED
+        return f'{label}: <font color="{col.hexval()}"><b>{"Yes" if ok else "No"}</b></font>'
+    pres = []
+    if val(r.get("Website Status")) not in ("No Website", "Broken / Not Opening", "Check Manually", "Could not check"):
+        pres += [yn(r.get("Facebook"), "Facebook"), yn(r.get("LinkedIn"), "LinkedIn"), yn(r.get("YouTube"), "YouTube")]
+    gm = val(r.get("Google Maps"))
+    if gm == "Found":
+        rating = val(r.get("Google Rating"))
+        pres.append(f'Google Maps: <b>{rating + " stars, " if rating else ""}{val(r.get("Google Reviews"), "0")} reviews</b>')
+    elif gm == "Not found":
+        pres.append(f'Google Maps: <font color="{RED.hexval()}"><b>Not listed</b></font>')
+    presence = None
+    if pres:
+        presence = Table([[P("ONLINE PRESENCE &nbsp;&nbsp; " + " &nbsp;\u00b7&nbsp; ".join(pres), "small")]],
+                         colWidths=[CONTENT_W])
+        presence.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 5),
+                                      ("BOTTOMPADDING", (0, 0), (-1, -1), 5), ("LINEBELOW", (0, 0), (-1, -1), 0.5, LINE)]))
+
     # findings
     left = [P("What we found on the website", "sec")] + issues_to_bullets(r.get("Website Issues"), "No problems found")
-    left += [Spacer(1, 4), P("Instagram", "sec")] + issues_to_bullets(r.get("Instagram Issues"), "Instagram page found")
+    social_txt = "\n".join(x for x in (val(r.get("Instagram Issues")), val(r.get("Social Media Issues"))) if x)
+    left += [Spacer(1, 4), P("Instagram &amp; social media", "sec")] + issues_to_bullets(social_txt, "Instagram page found")
     if val(r.get("Website Status")) in ("No Website", "Broken / Not Opening"):
         right = [P("Google / SEO", "sec"), P("Not checked - no working website.", "bullet")]
     else:
@@ -344,14 +378,26 @@ def _card(i, r, extras):
     opp = [o.strip() for o in val(r.get("Opportunities")).split(",") if o.strip()]
     chips = " &nbsp; ".join(f'<font backColor="{ACCENT_BG.hexval()}" color="#7A5200"><b>&nbsp;{escape(o)}&nbsp;</b></font>'
                             for o in opp) if opp else "-"
-    pitch = Table([[P("RECOMMENDED SERVICES", "label")], [P(chips, "small")],
-                   [P("PITCH LINE", "label")], [P(esc(r.get("Pitch Note")), "pitch")]],
-                  colWidths=[CONTENT_W])
-    pitch.setStyle(TableStyle([("BACKGROUND", (0, 2), (-1, 3), ACCENT_BG), ("LEFTPADDING", (0, 0), (-1, -1), 8),
+    prow = [[P("RECOMMENDED SERVICES", "label")], [P(chips, "small")],
+            [P("PITCH LINE", "label")], [P(esc(r.get("Pitch Note")), "pitch")]]
+    if val(r.get("Pitch (Hinglish)")):
+        prow.append([P(f'<font color="{GREY.hexval()}">Hinglish:</font> {esc(r.get("Pitch (Hinglish)"))}', "small")])
+    if val(r.get("Coverage Pitch")):
+        prow.append([P(f'<font color="{GRN.hexval()}"><b>Coverage idea:</b></font> {esc(r.get("Coverage Pitch"))}', "small")])
+    wa = val(r.get("WhatsApp Link"))
+    if wa:
+        prow.append([P(f'<a href="{escape(wa)}" color="#128C7E"><u><b>Open ready WhatsApp message</b></u></a>'
+                       f'<font color="{GREY.hexval()}"> - tap to send to {esc(r.get("Phone"))}</font>', "small")])
+    note_bits = [x for x in (val(r.get("Data Check")), val(r.get("Notes")).replace("\n", "; ")) if x]
+    if note_bits:
+        prow.append([P(f'<font color="{GREY.hexval()}">Note: {esc("; ".join(note_bits))}</font>', "tiny")])
+    pitch = Table(prow, colWidths=[CONTENT_W])
+    pitch.setStyle(TableStyle([("BACKGROUND", (0, 2), (-1, -1), ACCENT_BG), ("LEFTPADDING", (0, 0), (-1, -1), 8),
                                ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 1), (-1, 1), 6),
-                               ("BOTTOMPADDING", (0, 3), (-1, 3), 8), ("LINEABOVE", (0, 0), (-1, 0), 0.5, LINE)]))
+                               ("BOTTOMPADDING", (0, -1), (-1, -1), 8), ("LINEABOVE", (0, 0), (-1, 0), 0.5, LINE)]))
 
-    card = Table([[head], [Spacer(1, 3)], [details], [scores], [findings], [pitch]], colWidths=[CONTENT_W])
+    rows = [[head], [Spacer(1, 3)], [details], [scores]] + ([[presence]] if presence else []) + [[findings], [pitch]]
+    card = Table(rows, colWidths=[CONTENT_W])
     card.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, LINE), ("LEFTPADDING", (0, 0), (-1, -1), 0),
                               ("RIGHTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 0),
                               ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
